@@ -1,0 +1,50 @@
+name: Publish
+
+# npm trusts this workflow by its filename (trusted publishing), so renaming
+# the file stops releases from publishing.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # authenticates the publish with npm and signs the provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Trusted publishing needs npm 11.5.1 or newer, which Node 24 ships.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node -e 'const expected = "v" + require("./package.json").version; if (process.env.RELEASE_TAG !== expected) { console.error("Release tag must be " + expected); process.exit(1); }'
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # `npm ci` already built via prepare, so this checks the size the release
+      # is about to ship against the size the docs advertise.
+      - run: npm run size
+
+      - name: Review package contents
+        run: npm pack --dry-run --ignore-scripts
+
+      - name: Refuse source maps
+        run: |
+          if find dist -name '*.map' | grep -q . || grep -rq sourceMappingURL dist; then
+            echo "dist holds source maps or sourceMappingURL comments" >&2
+            exit 1
+          fi
+
+      # `prepare` rebuilds dist before packing, so the published files are built here.
+      - run: npm publish

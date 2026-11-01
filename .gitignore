@@ -1,0 +1,35 @@
+# Build output
+dist/
+*.log
+
+# Node modules
+node_modules/
+
+# Lockfiles from other package managers (package-lock.json is committed — CI runs `npm ci`)
+yarn.lock
+pnpm-lock.yaml
+
+# IDE / local tooling state — never belongs in the repo
+.vscode/
+.idea/
+.claude/
+.codex/
+.wrangler/
+*.tgz
+
+# Local environment, credentials, and private keys
+.env
+.env.*
+!.env.example
+!.env.*.example
+.npmrc
+.netrc
+.aws/
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# MacOS/OS junk
+.DS_Store
