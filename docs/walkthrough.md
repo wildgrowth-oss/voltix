@@ -16,7 +16,7 @@ A task board, built step by step: one store first, then actions, contracts, a st
 
 ## 1. A store and a component
 
-A store is a flat object of keys, created once at module scope. No provider, no context.
+A store is a flat object of keys, created once at module scope. Components import it directly, with no provider or context around them.
 
 ```tsx
 // ui.ts
@@ -44,9 +44,11 @@ function SearchBox() {
 
 ## 2. Several keys, independent re-renders
 
-`useStoreSelector` takes an array of keys and returns just those keys.
+`useStoreSelector` takes an array of keys and returns those keys as one object.
 
 ```tsx
+import { useStoreSelector } from '@wildgrowth/voltix';
+
 function Toolbar() {
   const { filter, search } = useStoreSelector(ui, ['filter', 'search']);
   return <span>{filter} · {search}</span>;
@@ -61,7 +63,7 @@ ui.subscribe(['search'], () => console.log('search'));
 
 ui.setKey('filter', 'open');   // logs 'filter'
 ui.setKey('search', 'milk');   // logs 'search'
-ui.setKey('filter', 'open');   // logs nothing — same value, no write
+ui.setKey('filter', 'open');   // logs nothing: the value did not change
 ```
 
 ## 3. Put the writes in actions
@@ -81,14 +83,14 @@ export const uiActions = createActions(ui, (store) => ({
 }));
 
 uiActions.setFilter('open');
-ui.setKey('search', 'milk');   // the store is still just a store
+ui.setKey('search', 'milk');   // direct writes still work
 ```
 
-Actions are plain functions in a plain object: import them where needed, and combine sets with object spread.
+Actions are plain functions in a plain object: import them where needed, and merge several action objects with object spread.
 
 ## 4. A task that owns itself
 
-A task has rules (the title), behaviour, and a place to record a rejected write. Build it as a complete store before it joins any collection.
+A task has a rule for its title and an `error` key that holds the message of the last rejected write. Build it as a complete store before any collection holds it.
 
 ```tsx
 // task.ts
@@ -97,7 +99,7 @@ import { createStore } from '@wildgrowth/voltix';
 
 export function makeTask(id: string) {
   const task = createStore(
-    { title: '', done: false, error: '' },
+    { title: 'Untitled', done: false, error: '' },
     { schema: { title: z.string().trim().min(1).max(80) } }   // its contract
   );
 
@@ -113,19 +115,19 @@ Every task now behaves like this, wherever it ends up:
 const task = makeTask('t1');
 
 task.set({ title: '   ', error: '' });   // rejected by the contract
-task.getKey('title');                    // '' — the write never landed
+task.getKey('title');                    // 'Untitled': the write was rejected
 task.getKey('error');                    // 'Too small: expected string to have >=1 characters'
 
 task.set({ title: '  Buy milk  ', error: '' });
-task.getKey('title');                    // 'Buy milk' — the schema trimmed it on the way in
-task.getKey('error');                    // '' — cleared by the same write
+task.getKey('title');                    // 'Buy milk': the schema trimmed it
+task.getKey('error');                    // '': the same write cleared it
 ```
 
 The contract runs on every write, and the error handler runs after the write settles. That is why `set({ title, error: '' })` can clear an old error without erasing the message a rejection just wrote.
 
 ## 5. A store per id
 
-`createLookup` makes a **lookup**: a store per id. `at(id)` creates the store on first use and returns the same one after. The factory returns a finished store, so every task comes with its contract and error handling attached. Task actions go over the lookup, id first:
+`createLookup` makes a **lookup**: a store per id. `at(id)` creates the store on first use and returns the same one after. The factory returns a finished store, so every task comes with its contract and error handler. Task actions take the lookup and a task id:
 
 ```ts
 // tasks.ts
@@ -141,7 +143,7 @@ export const taskActions = createActions(tasks, (lookup) => ({
 
 taskActions.rename('t1', 'Buy milk');
 taskActions.toggle('t1');
-tasks.at('t1') === tasks.at('t1');   // true — memoized, the exact node makeTask built
+tasks.at('t1') === tasks.at('t1');   // true: the lookup keeps the store makeTask built
 ```
 
 `at(id)` is how you reach the store for an id. `has`, `keys`, `size`, `remove`, and `clear` handle the lifecycle.
@@ -157,7 +159,7 @@ import { ui } from './ui';
 import { tasks, taskActions } from './tasks';
 
 export const app = createStore({
-  ids: new Set<string>(),   // membership is the semantic — a Set can't hold a duplicate row
+  ids: new Set<string>(),   // a Set cannot hold the same id twice
   count: 0,
   open: 0,
   loading: false,
@@ -167,9 +169,9 @@ export const app = createStore({
 
 export const appActions = createActions(app, (store) => ({
   add(id: string, title: string) {
-    if (store.getKey('ids').has(id)) return;            // idempotent — a double add is a no-op
+    if (store.getKey('ids').has(id)) return;            // a second add of the same id does nothing
     taskActions.rename(id, title);
-    store.update('ids', (ids) => new Set(ids).add(id)); // fresh Set, so subscribers notify
+    store.update('ids', (ids) => new Set(ids).add(id)); // a new Set, so subscribers are notified
     store.increment('open');
   },
   remove(id: string) {
@@ -200,7 +202,7 @@ app.select('ui') === ui;                         // true
 app.select('tasks').at('t1') === tasks.at('t1');  // true
 ```
 
-Both ways of reaching a child are the same call; use whichever reads better. `ui.setKey('filter', 'open')` does the same as `app.select('ui').setKey('filter', 'open')`. `at` is for dynamic ids, like `app.select('tasks').at(someId)`. Note that `appActions` calls `taskActions` directly: actions are plain functions, so app behaviour is built out of task behaviour with ordinary calls.
+`ui.setKey('filter', 'open')` and `app.select('ui').setKey('filter', 'open')` write to the same store; use whichever reads better. `at` is for dynamic ids, like `app.select('tasks').at(someId)`. `appActions` calls `taskActions` directly, because actions are plain functions.
 
 ## 7. Derived keys and counters
 
@@ -213,7 +215,7 @@ appActions.add('t1', 'Buy milk');
 app.getKey('count');   // 1, already committed
 ```
 
-`open` depends on state spread across the lookup's stores, which `derive` cannot see. Update it from the actions that change it (`add`, `remove`, `toggle` above): O(1) per change instead of re-scanning every task.
+`open` depends on state spread across the lookup's stores, which `derive` cannot see. The `add`, `remove` and `toggle` actions in step 6 change it by one each time, so keeping it current costs O(1) per change.
 
 ## 8. Render it
 
@@ -252,7 +254,7 @@ function Board() {
 }
 ```
 
-Toggling one task re-renders **that `Row` only**. `Header` re-renders when `count` or `open` actually changed. Adding a task changes `ids` and `count`, so the list and `Header` update.
+Toggling one task re-renders **that `Row`** and `Header`, whose `open` count changed. The other rows stay as they are. Adding a task changes `ids`, `count` and `open`, so the list and `Header` update.
 
 ## 9. Load from a server
 
@@ -292,6 +294,7 @@ useEffect(() => { loadBoard(); }, []);
 Persist preferences; server data reloads from the server. Seed the initial state from storage, then attach `persist`.
 
 ```ts
+import { z } from 'zod';
 import { createStore, persist, loadPersistedState } from '@wildgrowth/voltix';
 
 type UiState = { filter: Filter; search: string };
@@ -322,11 +325,11 @@ Reading back what each piece did:
 | Step | Idea |
 |---|---|
 | 1–2 | One store, per-key subscriptions |
-| 3 | `createActions` co-locates writes, the store stays clean |
-| 4 | A child owns its contract, actions, and failure policy |
+| 3 | `createActions` groups the writes in one object, and the store stays as it was |
+| 4 | A task store carries its contract and error handler |
 | 5 | A lookup is that store, once per id |
 | 6 | Binding children into a root changes nothing about them |
-| 7 | `derive` for same-store values, write-through for cross-store counts |
+| 7 | `derive` for values inside one store; actions keep cross-store counts current |
 | 8 | Components subscribe to keys, so one row's write re-renders one row |
 | 9 | Async in actions |
 | 10 | Persist preferences, and let a contract repair corrupt storage |

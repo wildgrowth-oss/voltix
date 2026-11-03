@@ -1,7 +1,7 @@
 {
   "name": "@wildgrowth/voltix",
-  "version": "1.0.0",
-  "description": "Fastest React state library. Per-key subscriptions, 5.0 KB, zero dependencies.",
+  "version": "1.1.0",
+  "description": "Fastest React state library. Per-key subscriptions, 5.2 KB, zero dependencies.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./vanilla": {
+      "types": "./dist/vanilla.d.ts",
+      "import": "./dist/vanilla.mjs",
+      "require": "./dist/vanilla.js"
     },
     "./eslint": {
       "types": "./dist/eslint.d.ts",
@@ -23,6 +28,7 @@
   },
   "files": [
     "dist",
+    "vanilla",
     "!dist/**/*.map",
     "CHANGELOG.md",
     "docs"
@@ -31,17 +37,18 @@
     "type": "git",
     "url": "git+https://github.com/wildgrowth-oss/voltix.git"
   },
-  "homepage": "https://voltix.pages.dev",
+  "homepage": "https://voltix.wildgrowth.io",
   "bugs": {
     "url": "https://github.com/wildgrowth-oss/voltix/issues"
   },
   "scripts": {
-    "build": "tsup src/index.ts src/eslint.ts --format esm,cjs --dts --minify --clean",
+    "build": "tsup src/index.ts src/vanilla.ts src/eslint.ts --format esm,cjs --dts --minify --splitting --clean",
     "size": "node scripts/size.mjs",
     "size:write": "node scripts/size.mjs --write",
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON bench/vs.ts",
+    "bench:write": "node scripts/bench-table.mjs",
     "bench:vitest": "vitest bench --run",
     "typecheck": "tsc --noEmit --skipLibCheck",
     "prepare": "npm run build"
@@ -67,6 +74,9 @@
   },
   "peerDependenciesMeta": {
     "eslint": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },

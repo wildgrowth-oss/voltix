@@ -12,7 +12,7 @@ How Voltix decides what re-renders: subscriptions are per key, the state object 
 
 The words the docs use, in plain terms:
 
-**Store.** An object of keys, created with `createStore`. It lives outside React, so any module can import it and read or write it. No provider.
+**Store.** An object of keys, created with `createStore`. It lives outside React, so any module can import it and read or write it without a provider.
 
 **Key.** One named value in a store. Components subscribe to keys. Writing a key re-renders only the components reading that key.
 
@@ -66,7 +66,7 @@ before === after; // true, always the same reference
 
 What that means for you:
 
-- Reading is free. `getKey` and `get` return live values, no copies.
+- `getKey` and `get` return live values and copy nothing.
 - Comparing snapshots of `get()` tells you nothing, because the reference never changes. Subscribe to keys instead.
 - To change an object value, assign a new object. Mutating the current one changes data without telling anyone:
 
@@ -88,11 +88,11 @@ What you put under a key decides what the key is. Data makes a **leaf**: normal 
 const settings = createStore({ theme: 'dark', fontSize: 14 });
 
 const workspace = createStore({
-  name: 'Personal',   // leaf — data
-  settings,           // child — a store
+  name: 'Personal',   // leaf: data
+  settings,           // child: a store
 });
 
-workspace.get();                                      // { name: 'Personal' } — the workspace's own state
+workspace.get();                                      // { name: 'Personal' }: the workspace's own state
 workspace.select('settings').setKey('fontSize', 16);  // the settings data lives in `settings`
 ```
 
@@ -100,20 +100,11 @@ This is how one store grows into a tree. See [Composition](./composition.md).
 
 ## Equality
 
-A write only counts when the value actually changed (`Object.is`). Writing the same value again does nothing: no write, no re-render.
-
-Some values are new objects that mean the same thing, like a re-fetched user. Give that key its own equality check at creation and those writes are skipped too:
-
-```tsx
-const store = createStore(
-  { user: { id: 1, name: 'Ada' } },
-  { equals: { user: (prev, next) => prev.id === next.id } }
-);
-```
+A write counts only when the value changed (`Object.is`). Writing the same value again is skipped, and nothing re-renders.
 
 ### The compare-by-`.id` pattern
 
-A fetch or a form often produces a fresh object for the same entity. Compare by id and the noise disappears:
+A fetch or a form often produces a new object for the same entity, like a re-fetched user. Give that key an equality function at creation that compares by id, and a write of the same entity is skipped:
 
 ```tsx
 const store = createStore(
@@ -121,15 +112,15 @@ const store = createStore(
   { equals: { user: (prev, next) => prev.id === next.id } }
 );
 
-store.setKey('user', { id: 1, name: 'Ada' });          // renders
-store.setKey('user', { id: 1, name: 'Ada Lovelace' }); // same id, skipped
+store.setKey('user', { id: 2, name: 'Grace' });         // new id: written, readers re-render
+store.setKey('user', { id: 2, name: 'Grace Hopper' });  // same id: skipped, the name stays 'Grace'
 ```
 
 This runs at write time, so the skipped value never lands and nobody re-renders. To guard one component instead of the store, pass a compare function inside its [`useStoreSelector`](./api-reference.md#usestoreselector) selector.
 
 ## Batching
 
-`batch` groups several writes into one notification per subscription, after the callback ends. Separate subscriptions using the same callback remain independent.
+`batch` groups several writes into one notification per subscription, after the callback ends. A function subscribed twice runs once for each of its subscriptions.
 
 ```tsx
 store.batch(() => {
@@ -137,7 +128,7 @@ store.batch(() => {
   store.increment('count', 5);
   store.setKey('label', 'moved');
 });
-// a component reading count and label re-renders once, not three times
+// a component reading count and label re-renders once
 ```
 
 Use `batch` for a loop of writes, or when calling several functions that each write on their own. If you already know the keys, `set({ count: 15, label: 'moved' })` is one update and needs no batch. Nested `batch` calls flush once, at the end of the outermost one.

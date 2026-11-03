@@ -2,13 +2,18 @@
 // Store-engine throughput against the latest Zustand, Jotai, Valtio and nanostores. Every case runs
 // in its own process so no two share JIT feedback, times its loop at its own call site, and reports
 // the median of 40 runs of about 10 ms each. The README's benchmark table is this script's output.
+// Every library runs its production code: each case runs with NODE_ENV=production, and Jotai, which
+// reads import.meta.env instead, is imported from a bundle built the way an app's production build is.
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { cpus, loadavg } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+import { buildSync } from 'esbuild';
+
 import { batch as lBatch, observable } from '@legendapp/state';
 import { batch as pBatch, effect, signal } from '@preact/signals-core';
-import { atom as jAtom, createStore as jCreate } from 'jotai/vanilla';
 import { atom as nAtom } from 'nanostores';
 import * as solid from 'solid-js/dist/solid.js';
 import { subscribeKey } from 'valtio/utils';
@@ -16,7 +21,24 @@ import { proxy } from 'valtio/vanilla';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { createStore as zCreate } from 'zustand/vanilla';
 
-import { createStore } from '../src/index.ts';
+import { createStore } from '../src/vanilla.ts';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+const jotaiVersion = createRequire(import.meta.url)('jotai/package.json').version;
+const jotaiBuild = `${root}node_modules/.cache/voltix-bench/jotai-${jotaiVersion}.mjs`;
+if (!existsSync(jotaiBuild)) {
+  buildSync({
+    absWorkingDir: root,
+    entryPoints: ['jotai/vanilla'],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    define: { 'import.meta.env': '{"MODE":"production"}' },
+    outfile: jotaiBuild,
+    logLevel: 'error',
+  });
+}
+const { atom: jAtom, createStore: jCreate } = await import(jotaiBuild);
 
 // Solid's computations need an owner; the root lives for the case and its `createComputed` runs
 // synchronously on every write, which is the counterpart of the other libraries' listeners.
@@ -31,6 +53,10 @@ const listener = () => {
 const fresh = () => () => {
   if (++sink === -1) throw new Error('unreachable');
 };
+// The notify cases' listeners, made before any subscribe so they sit together in memory. Made one per
+// subscribe, they interleave with the library's allocations and cost twice as much to call until a GC
+// packs them. A library that allocates nothing per update runs no GC while it is timed.
+const listeners = () => Array.from({ length: N }, fresh);
 
 /** Median time of one operation, in ns. `run(n)` performs it n times in a loop at its own call site. */
 function measure(run: (n: number) => void): number {
@@ -315,7 +341,8 @@ const scenarios: Record<string, Scenario> = {
   'notify 1000 subscribers': {
     voltix() {
       const s = createStore({ v: 0 });
-      for (let i = 0; i < N; i++) s.subscribe(['v'], fresh());
+      const ls = listeners();
+      for (let i = 0; i < N; i++) s.subscribe(['v'], ls[i]);
       let a = 0;
       return measure((n) => {
         for (let i = 0; i < n; i++) s.setKey('v', a++);
@@ -323,7 +350,8 @@ const scenarios: Record<string, Scenario> = {
     },
     zustand() {
       const s = zCreate(() => ({ v: 0 }));
-      for (let i = 0; i < N; i++) s.subscribe(fresh());
+      const ls = listeners();
+      for (let i = 0; i < N; i++) s.subscribe(ls[i]);
       let a = 0;
       return measure((n) => {
         for (let i = 0; i < n; i++) s.setState({ v: a++ });
@@ -331,7 +359,8 @@ const scenarios: Record<string, Scenario> = {
     },
     nanostores() {
       const a = nAtom(0);
-      for (let i = 0; i < N; i++) a.listen(fresh());
+      const ls = listeners();
+      for (let i = 0; i < N; i++) a.listen(ls[i]);
       let x = 0;
       return measure((n) => {
         for (let i = 0; i < n; i++) a.set(x++);
@@ -340,7 +369,8 @@ const scenarios: Record<string, Scenario> = {
     jotai() {
       const store = jCreate();
       const a = jAtom(0);
-      for (let i = 0; i < N; i++) store.sub(a, fresh());
+      const ls = listeners();
+      for (let i = 0; i < N; i++) store.sub(a, ls[i]);
       let x = 0;
       return measure((n) => {
         for (let i = 0; i < n; i++) store.set(a, x++);
@@ -348,8 +378,9 @@ const scenarios: Record<string, Scenario> = {
     },
     'preact signals'() {
       const s = signal(0);
+      const ls = listeners();
       for (let i = 0; i < N; i++) {
-        const l = fresh();
+        const l = ls[i];
         effect(() => {
           s.value;
           l();
@@ -363,8 +394,9 @@ const scenarios: Record<string, Scenario> = {
     'solid signals'() {
       return solidRoot(() => {
         const [x, setX] = solid.createSignal(0);
+        const ls = listeners();
         for (let i = 0; i < N; i++) {
-          const l = fresh();
+          const l = ls[i];
           solid.createComputed(() => {
             x();
             l();
@@ -378,7 +410,8 @@ const scenarios: Record<string, Scenario> = {
     },
     'legend-state'() {
       const o = observable(0);
-      for (let i = 0; i < N; i++) o.onChange(fresh());
+      const ls = listeners();
+      for (let i = 0; i < N; i++) o.onChange(ls[i]);
       let a = 0;
       return measure((n) => {
         for (let i = 0; i < n; i++) o.set(a++);
@@ -656,7 +689,10 @@ for (const [scenario, cases] of Object.entries(scenarios)) {
   if (scenarioArg && scenario !== scenarioArg) continue;
   console.log(scenario);
   for (const library of Object.keys(cases)) {
-    const out = execFileSync(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', self, scenario, library], { encoding: 'utf8' });
+    const out = execFileSync(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', self, scenario, library], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'production' },
+    });
     const ns = Number(out.trim());
     console.log(`  ${library.padEnd(36)} ${ops(ns).padStart(7)}   (${ns.toFixed(1)} ns)`);
   }

@@ -42,7 +42,7 @@ function Counter() {
 }
 ```
 
-`define` receives the store, so an action can write several keys in one update:
+The function you pass to `createActions` receives the store, so an action can write several keys in one update:
 
 ```tsx
 export const canvas = createStore({ x: 0, y: 0, dirty: false });
@@ -55,9 +55,11 @@ export const canvasActions = createActions(canvas, (store) => ({
 
 `store.set({ x, y, dirty: true })` writes all three keys in one update, so a component reading them re-renders once.
 
-`createActions` also works on a lookup. Actions take the id first:
+`createActions` also works on a lookup. Actions over a lookup take the id as their first argument:
 
 ```tsx
+import { createLookup, createActions } from '@wildgrowth/voltix';
+
 export const todos = createLookup((id: string) => ({ text: '', done: false }));
 
 export const todoActions = createActions(todos, (lookup) => ({
@@ -68,7 +70,7 @@ export const todoActions = createActions(todos, (lookup) => ({
 todoActions.add('t1', 'buy milk');
 ```
 
-Combine sets with object spread (`{ ...baseActions, ...extraActions }`). For a one-off writer, a plain function that uses the store is fine too.
+Merge several action objects with object spread (`{ ...baseActions, ...extraActions }`). For a one-off writer, a plain function that uses the store works too.
 
 ## Contracts with zod
 
@@ -82,7 +84,7 @@ export const profile = createStore(
   { email: '', age: 0, plan: 'free' as 'free' | 'pro' },
   {
     schema: {
-      email: z.string().email(),
+      email: z.string().email().or(z.literal('')),
       age: z.number().int().min(0).max(130),
       plan: z.enum(['free', 'pro']),
     },
@@ -102,7 +104,7 @@ By default a rejection is logged with the key and the issues:
 ```
 [voltix] write to "email" rejected by schema (zod):
   • Invalid email address
-  received: 'not-an-email'
+  received: not-an-email
 ```
 
 To show a rejection in the UI instead, register a handler with [`onSchemaError`](./api-reference.md#onschemaerror). It registers after construction, so it can use the finished store and its actions:
@@ -119,13 +121,13 @@ const profileActions = createActions(profile, (store) => ({
 profile.onSchemaError((error) => profileActions.flagEmail(error.issues[0].message));
 
 profile.setKey('email', 'nope');
-profile.getKey('email');      // 'a@b.co' — the write is still rejected
+profile.getKey('email');      // 'a@b.co': the write was rejected
 profile.getKey('emailError'); // 'Invalid email address'
 ```
 
 The handler gets the failing store as `error.store`, so a store inside a lookup reports itself. While a handler is registered the console logging is off; the returned disposer turns it back on.
 
-Initial values are checked too. A bad one is reported and kept — construction never throws — and transforms apply to initial values the same as to writes.
+Initial values are checked too. A bad one is logged and kept, and construction never throws. Transforms apply to initial values the same as to writes.
 
 Schemas can also normalize values on the way in:
 
@@ -296,7 +298,7 @@ Async writes are fire-and-forget, so state updates are never blocked by a slow w
 
 ### What survives storage
 
-The default format is JSON plus the common non-JSON types: `Date`, `Map`, `Set`, and `undefined` come back as what they were, nesting included. Values persisted by older versions (plain JSON) load unchanged.
+The default format is JSON plus the common non-JSON types: `Date`, `Map`, `Set`, and `undefined` come back as what they were, nesting included. Plain JSON values, such as ones written by hand, load unchanged.
 
 ```ts
 const filters = createStore({ tags: new Set<string>(), since: new Date(0) });
@@ -306,7 +308,7 @@ persist(filters, localStorage, 'filters', ['tags', 'since']);
 loadPersistedState(localStorage, 'filters', ['tags', 'since']); // { tags: Set, since: Date }
 ```
 
-For anything beyond that (BigInt, RegExp, class instances), pass a parser — an object with `stringify` and `parse` — as the last argument to both `persist` and `loadPersistedState`. [superjson](https://github.com/flightcontrolhq/superjson) has exactly that shape:
+For anything beyond that (BigInt, RegExp, class instances), pass a parser (an object with `stringify` and `parse`) as the last argument to both `persist` and `loadPersistedState`. [superjson](https://github.com/flightcontrolhq/superjson) has exactly that shape:
 
 ```ts
 import superjson from 'superjson';
@@ -318,7 +320,9 @@ const persisted = loadPersistedState(localStorage, 'myapp', ['snapshot'], superj
 Writing your own is two functions: `stringify` gets a value and returns the string to store, `parse` gets that string back and returns the value. The `PersistParser` type is exported. One that keeps `BigInt`:
 
 ```ts
-import { persist, loadPersistedState, type PersistParser } from '@wildgrowth/voltix';
+import { createStore, persist, loadPersistedState, type PersistParser } from '@wildgrowth/voltix';
+
+const wallet = createStore({ balance: 0n });
 
 const bigintParser: PersistParser = {
   stringify: (value) => JSON.stringify(value, (key, v) =>
@@ -338,14 +342,16 @@ Use the same parser on both sides. Switching parsers changes the stored format, 
 Storage contents can be anything: users edit `localStorage`, old deploys leave old shapes behind. A [contract](#contracts-with-zod) with `.catch()` repairs a corrupt value at construction:
 
 ```tsx
-const persisted = loadPersistedState<State>(localStorage, 'myapp', ['plan']);
+type PlanState = { plan: 'free' | 'pro' };
 
-const store = createStore(
-  { plan: 'free' as 'free' | 'pro', ...persisted },
+const persisted = loadPersistedState<PlanState>(localStorage, 'myapp', ['plan']);
+
+const store = createStore<PlanState>(
+  { plan: 'free', ...persisted },
   { schema: { plan: z.enum(['free', 'pro']).catch('free') } }
 );
 
-// storage said plan: "EVIL" → store starts as 'free', no crash, no garbage state
+// storage held plan: "EVIL", so the store starts with 'free'
 ```
 
 When the persisted shape changes between releases, change the prefix (`'myapp-v2'`): old keys are never read again and the store starts from defaults.
@@ -372,6 +378,8 @@ off(); // stop reacting
 ```
 
 For a plain notification with no values, [`subscribe`](./api-reference.md#subscribe) runs a listener synchronously whenever a key changes and returns an unsubscribe function.
+
+Code that runs where React is not installed, such as a Node service or a worker, imports the same API from `@wildgrowth/voltix/vanilla`.
 
 ## Custom equality
 
@@ -413,7 +421,7 @@ function selectMany(ids: string[]) {
     }
   });
 }
-// one re-render for a component reading `selected`, not one per id
+// a component reading `selected` re-renders once
 ```
 
 Batching composes with [actions](#organizing-actions). Each action writes on its own; wrap two of them in a `batch` and their writes notify together:
@@ -437,12 +445,12 @@ Nested `batch` calls join the outer batch and flush once at the end.
 
 `useStoreKey` and `useStoreSelector` are SSR-safe: on the server they render the store's current values, and the page hydrates cleanly.
 
-One thing to watch. On the server, a module-scope store is **one object shared by every request**: two users hitting the same server share it. Write user data into it during server rendering and one user's data can end up in another user's HTML.
+On the server, a module-scope store is **one object shared by every request**: two users hitting the same server share it. Write user data into it during server rendering and one user's data can end up in another user's HTML.
 
 So split your state in two:
 
-- **Same for everyone** (theme default, feature flags, UI state): safe to keep in stores anywhere.
-- **Per user** (profile, cart, permissions): fetch it on the server, pass it down as props, and write it into the store **on the client**.
+- State that is the same for everyone (theme default, feature flags, UI state) is safe in stores anywhere.
+- Per-user state (profile, cart, permissions) is fetched on the server, passed down as props, and written into the store **on the client**.
 
 ```tsx
 // profile.ts
@@ -454,7 +462,7 @@ export const profileActions = createActions(profile, (store) => ({
 ```
 
 ```tsx
-// server — one fetch, the data rides the page response
+// server: one fetch; the data travels in the page response
 async function Page() {
   const user = await fetchUser();
   return <Profile user={user} />;
@@ -462,18 +470,18 @@ async function Page() {
 ```
 
 ```tsx
-// client — first paint from props, the store takes over after mount
+// client: first paint from props; the store takes over after mount
 'use client';
 import { profile, profileActions } from './profile';
 
 function Profile({ user }: { user: { name: string; plan: string } }) {
   useEffect(() => { profileActions.sync(user); }, [user]);
   const { name, synced } = useStoreSelector(profile, ['name', 'synced']);
-  // no loading state — both sides show the same data, `synced` only says who holds it
+  // both sides show the same data; `synced` says which one holds it
   return <h1>{synced ? name : user.name}</h1>;
 }
 ```
 
-One trip total: the fetch happens on the server, the props carry the data into the first paint, and after mount the store holds it — mutations and polling flow through the store from there. Keep the store write in the effect: writing during render looks like a shortcut, but client components also render on the server, and that write lands in the shared server store — the leak above.
+One round trip: the server fetches, the props carry the data into the first paint, and after mount the store holds it. Mutations and polling go through the store from then on. Keep the store write in the effect. Client components also render on the server, so a write during render lands in the shared server store, where one user's data can reach another user's page.
 
-Server actions belong on the write path, not the first load: calling one from a mount effect costs a second round trip for data the page could have carried as props. For mutations they slot right in — a store action calls the server action and writes the result back into the store.
+Use server actions for writes. Calling one from a mount effect costs a second round trip for data the page could have carried as props. For a mutation, a store action calls the server action and writes the result back into the store.

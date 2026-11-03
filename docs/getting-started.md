@@ -16,7 +16,13 @@ Voltix is a fine-grained state manager for React. You create a store that holds 
 npm i @wildgrowth/voltix
 ```
 
-`react` is the only peer dependency. The package is about 5.0 KB gzipped and ships its own types.
+The hooks need `react` 18 or later. The package is about 5.2 KB gzipped, has no dependencies and ships its own types.
+
+Code that runs without React imports from `@wildgrowth/voltix/vanilla`. It has everything except the React hooks `useStoreKey`, `useStoreSelector` and `createStoreHook`:
+
+```ts
+import { createStore } from '@wildgrowth/voltix/vanilla';
+```
 
 ## Your first store
 
@@ -49,7 +55,7 @@ function Count() {
 
 ## Read several keys with `useStoreSelector`
 
-For more than one key, `useStoreSelector` takes an array of keys and returns just those keys. The component re-renders when any of them changes.
+For more than one key, `useStoreSelector` takes an array of keys and returns those keys as one object. The component re-renders when any of them changes.
 
 ```tsx
 import { useStoreSelector } from '@wildgrowth/voltix';
@@ -61,7 +67,7 @@ function Status() {
 }
 ```
 
-The selector is always an array: key strings, plus `{ key: compareFn }` entries when a key needs its own comparison. See [`useStoreSelector`](./api-reference.md#usestoreselector).
+The selector is always an array. Its entries are key names, plus an object such as `{ count: (prev, next) => Math.floor(prev / 10) === Math.floor(next / 10) }` for a key that needs its own comparison. A compare function that returns `true` treats the two values as equal, so the component skips that re-render. See [`useStoreSelector`](./api-reference.md#usestoreselector).
 
 ## Pre-bind a hook with `createStoreHook`
 

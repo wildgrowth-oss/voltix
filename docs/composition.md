@@ -1,8 +1,8 @@
 # Composition
 
-A key can hold another store. That is the whole mechanism: build small stores, bind them under keys, and you get a tree.
+A key can hold another store. Build small stores, bind them under keys, and they form a tree.
 
-Build the child first, bind it after. Binding changes nothing about the child, and a nested store is exactly as fast as a flat one.
+Build the child first, bind it after. Binding changes nothing about the child, and a nested store costs the same to read and write as a flat one.
 
 - [The example](#the-example)
 - [Nesting a store](#nesting-a-store)
@@ -16,13 +16,13 @@ See also [Core concepts](./core-concepts.md) for the vocabulary and the [API ref
 
 ## The example
 
-Everything below builds one thing: a **workspace** with user settings and a set of documents, where each document has its own comments.
+This page builds one example: a **workspace** with user settings and a set of documents, where each document has its own comments.
 
 ```
 workspace                leaves: name, syncing
 ├── settings             theme, fontSize              (a nested store)
 └── documents            a lookup: one store per document id
-    └── <docId>          title, body, dirty, error    (contract + actions + error policy)
+    └── <docId>          title, body, dirty, error    (contract and error handler)
         └── comments     a lookup: one store per comment id
             └── <id>     author, text, resolved
 ```
@@ -53,7 +53,7 @@ export const workspace = createStore({
 
 workspace.setKey('name', 'Team');           // a parent leaf
 settingsActions.toggleTheme();               // the child's actions still work
-workspace.select('settings') === settings;   // true — binding did not copy or rebuild it
+workspace.select('settings') === settings;   // true: binding keeps the same store
 ```
 
 Passing a store *as* the shape is a `TypeError`. A store goes under a key: write `createStore({ settings })`, never `createStore(settings)`.
@@ -63,13 +63,13 @@ Passing a store *as* the shape is a `TypeError`. A store goes under a key: write
 What you put under a key decides what the key is:
 
 - Data (numbers, strings, booleans, objects, arrays) makes a **leaf**: the store's own state. `get()` returns leaves, `setKey` writes them, components subscribe to them.
-- A store or a lookup makes a **child**. The child keeps its own state; the parent just holds the reference. You read and write a child on the child itself.
+- A store or a lookup makes a **child**. The child keeps its own state, and the parent holds a reference to it. You read and write a child on the child itself.
 
-The `workspace` from above has two leaves and one child:
+This `workspace` has two leaves and one child:
 
 ```tsx
-workspace.get();        // { name: 'Team', syncing: false } — the workspace's own state
-workspace.children();   // ['settings'] — the settings data lives in `settings`, so `get()` has none of it
+workspace.get();        // { name: 'Team', syncing: false }: the workspace's own state
+workspace.children();   // ['settings']: the settings data lives in `settings`, outside `get()`
 
 workspace.setKey('syncing', true);                    // leaf write
 workspace.select('settings').setKey('fontSize', 16);  // child state is written on the child
@@ -81,9 +81,9 @@ A plain object never becomes a child. `cursor: { line: 1, column: 1 }` is one le
 
 ## Lookups: a store per id
 
-`createLookup(factory)` makes a **lookup**: a store per id. `at(id)` returns the store for that id — the first call runs your factory to create it, later calls return the same one. Use a lookup for per-item state: documents, rows, entities.
+`createLookup(factory)` makes a **lookup**: a store per id. `at(id)` returns the store for that id: the first call runs your factory to create it, and later calls return the same one. Use a lookup for per-item state: documents, rows, entities.
 
-The factory builds each store completely, so every document comes with its contract and error handling attached. Actions go over the lookup, taking the id first:
+The factory builds each store completely, so every document comes with its contract and error handler. Actions take the lookup and a document id:
 
 ```tsx
 import { z } from 'zod';
@@ -113,14 +113,14 @@ Each document checks its own writes and reports its own failures:
 
 ```tsx
 documentActions.rename('spec', '   ');   // rejected by the contract
-documents.at('spec').getKey('title');    // 'Untitled' — the write never landed
+documents.at('spec').getKey('title');    // 'Untitled': the write was rejected
 documents.at('spec').getKey('error');    // 'Too small: expected string to have >=1 characters'
 
 documentActions.rename('spec', '  Design spec  ');
-documents.at('spec').getKey('title');    // 'Design spec' — the contract trimmed it on the way in
+documents.at('spec').getKey('title');    // 'Design spec': the contract trimmed it
 ```
 
-When the per-item state is plain data with no behaviour, return a shape from the factory instead and the lookup builds the stores for you. A second argument applies [`StoreOptions`](./api-reference.md#storeoptions) to each one:
+When each item is plain data with no schema or handler of its own, return a shape from the factory, and the lookup builds the stores. A second argument applies [`StoreOptions`](./api-reference.md#storeoptions) to each one:
 
 ```tsx
 const presence = createLookup(
@@ -131,30 +131,36 @@ const presence = createLookup(
 
 Options apply to shape factories only. A factory that builds its own stores configures them itself, so lookup options are ignored there (with a dev warning).
 
-A lookup has no keys of its own. Its surface is `at` plus lifecycle:
+A lookup has no keys of its own. It has `at` plus the lifecycle methods:
 
 ```tsx
+documents.at('readme');     // creates the readme store
 documents.has('readme');    // true
-documents.keys();           // ['readme', 'spec'] — live ids, insertion order
+documents.keys();           // ['spec', 'readme']: live ids, in insertion order
 documents.size();           // 2
 documents.remove('spec');   // true; a later at('spec') builds a fresh store
 documents.clear();          // drop every store
 ```
 
-`remove` and `clear` drop the store and its subscriptions. One thing they can't clean up: wiring to something **external** (a subscription on another store, a timer, a socket). Keep those disposers where you can reach them and call one before removing:
+`remove` and `clear` drop the store and its subscriptions. They cannot clean up wiring to something **external** (a subscription on another store, a timer, a socket). Keep those disposers where you can reach them and call one before removing:
 
 ```tsx
+const onlineUsers = createStore({ ids: new Set<string>() });
 const stopSync = new Map<string, () => void>();
 
 function makePresence(userId: string) {
   const presence = createStore({ online: false });
-  stopSync.set(userId, socket.onChange(['users'], () => presence.setKey('online', socket.has(userId))));
+  stopSync.set(userId, onlineUsers.onChange(['ids'], ({ ids }) => presence.setKey('online', ids.has(userId))));
   return presence;
 }
 
-stopSync.get(userId)?.();
-stopSync.delete(userId);
-presence.remove(userId);
+const presences = createLookup(makePresence);
+
+function removeUser(userId: string) {
+  stopSync.get(userId)?.();
+  stopSync.delete(userId);
+  presences.remove(userId);
+}
 ```
 
 In React, a component subscribes to one store from the lookup, so editing one document re-renders one row:
@@ -172,8 +178,8 @@ A lookup binds under a key exactly like a store. With both pieces built, the wor
 export const workspace = createStore({
   name: 'Personal',
   syncing: false,
-  settings,     // child — a store
-  documents,    // child — a lookup
+  settings,     // child: a store
+  documents,    // child: a lookup
 });
 ```
 
@@ -181,13 +187,13 @@ export const workspace = createStore({
 
 Two methods, one argument each:
 
-- **`select(key)`** steps into a fixed child. The key is typed, autocompleted, and checked at compile time.
-- **`at(id)`** steps into a lookup. The id is runtime data.
+- `select(key)` steps into a fixed child. The key is typed, autocompleted, and checked at compile time.
+- `at(id)` steps into a lookup. The id is runtime data.
 
 ```tsx
 documentActions.rename('readme', 'README');
 
-workspace.select('documents').at('readme') === documents.at('readme');  // true — same store
+workspace.select('documents').at('readme') === documents.at('readme');  // true: same store
 ```
 
 Use `at` when the id comes from data, like `documents.at(currentDocId)`. For a fixed child you usually already have the reference, and `settings.setKey('fontSize', 16)` does the same thing as `workspace.select('settings').setKey('fontSize', 16)`, so use the shorter one.
@@ -241,8 +247,8 @@ Now edit one document's body and walk through who re-renders:
 ```tsx
 documentActions.edit('readme', '# Hello');   // writes `body` on the readme document
 
-// <Body id="readme" />      re-renders — it reads that key on that document
-// <Title id="readme" />     unchanged — same document, different key
-// <Body id="changelog" />   unchanged — different document
-// anything reading `workspace.name` etc. — unchanged; a write inside a child never touches the parent
+// <Body id="readme" />      re-renders: it reads that key on that document
+// <Title id="readme" />     unchanged: same document, different key
+// <Body id="changelog" />   unchanged: different document
+// a component reading a workspace key: unchanged, because the write stays inside the child
 ```

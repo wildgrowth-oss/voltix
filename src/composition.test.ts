@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, expectTypeOf } from 'vitest';
 import { z } from 'zod';
 import { createStore, createLookup, createActions, type Store, type Lookup } from './index';
+import * as vanilla from './vanilla';
 
 describe('createStore — composition', () => {
+  it('nests a store from the vanilla entry, which is the same engine', () => {
+    const settings = vanilla.createStore({ theme: 'dark' });
+    const app = createStore({ settings });
+    expect(app.select('settings')).toBe(settings);
+    expectTypeOf(app.select('settings')).toEqualTypeOf<vanilla.Store<{ theme: string }>>();
+    expect(vanilla.createStore).toBe(createStore);
+  });
+
   it('nests stores literally and navigates with select (chained, memoized)', () => {
     const root = createStore({
       a: 1,

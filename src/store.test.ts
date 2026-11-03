@@ -628,6 +628,75 @@ describe('createStore', () => {
       expect(l).toHaveBeenCalledTimes(501)
       off()
     })
+
+    it('keys left with no listeners are released at the end of the tick', async () => {
+      const store = createStore({} as Record<string, number>)
+      const table = () => Object.keys((store as unknown as { keyListeners: object }).keyListeners).length
+      const live = vi.fn()
+      for (let i = 0; i < 100; i++) store.subscribe(['live' + i], live)
+      for (let i = 0; i < 10_000; i++) store.subscribe(['row' + i], () => {})()
+      const offs = Array.from({ length: 50 }, (_, i) => store.subscribe(['live' + i, 'extra' + i], live))
+      for (const off of offs) off()
+      await Promise.resolve()
+      expect(table()).toBe(100)
+
+      for (let i = 0; i < 100; i++) store.setKey('live' + i, 1)
+      expect(live).toHaveBeenCalledTimes(100)
+
+      const back = vi.fn()
+      store.subscribe(['row0'], back)
+      store.setKey('row0', 1)
+      expect(back).toHaveBeenCalledTimes(1)
+    })
+
+    it('a key emptied and reused in one tick keeps notifying, and is released once it empties again', async () => {
+      const store = createStore({ x: 0 })
+      const table = () => Object.keys((store as unknown as { keyListeners: object }).keyListeners).length
+      const l = vi.fn()
+      store.subscribe(['x'], () => {})()
+      const off = store.subscribe(['x'], l)
+      await Promise.resolve()
+      store.setKey('x', 1)
+      expect(l).toHaveBeenCalledTimes(1)
+
+      off()
+      await Promise.resolve()
+      expect(table()).toBe(0)
+    })
+
+    it('a batch opened during a notify reaches the listeners added and removed inside it', () => {
+      const store = createStore({ a: 0, b: 0 })
+      const added = vi.fn()
+      const removed = vi.fn()
+      const offRemoved = store.subscribe(['b'], removed)
+      store.subscribe(['b'], () => {})
+      store.subscribe(['a'], () => {
+        store.batch(() => {
+          store.setKey('b', 1)
+          store.subscribe(['b'], added)
+          offRemoved()
+        })
+      })
+      store.subscribe(['a'], () => {})
+      store.setKey('a', 1)
+      expect(added).toHaveBeenCalledTimes(1)
+      expect(removed).not.toHaveBeenCalled()
+    })
+
+    it('a key emptied and resubscribed inside a batch notifies once', () => {
+      const store = createStore({} as Record<string, number>)
+      const offs = Array.from({ length: 40 }, (_, i) => store.subscribe(['k' + i], () => {}))
+      const offA = store.subscribe(['a'], () => {})
+      const next = vi.fn()
+      store.batch(() => {
+        store.setKey('a', 1)
+        offA()
+        for (const off of offs) off()
+        store.subscribe(['a'], next)
+        store.setKey('a', 2)
+      })
+      expect(next).toHaveBeenCalledTimes(1)
+    })
   })
 
   // -- select ---------------------------------------------------------------

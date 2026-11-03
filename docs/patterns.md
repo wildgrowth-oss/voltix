@@ -12,7 +12,7 @@ See also [Composition](./composition.md) for lookups and nesting, [Guides](./gui
 
 ## Sending requests
 
-Keep a request in the store as three keys: `status`, `data`, `error`. The spinner reads `status`, the table reads `data`, and each re-renders only when its own key changes.
+Keep a request in the store as three keys: `status`, `data`, `error`. A component that shows a spinner reads `status`, a component that shows the list reads `data`, and each re-renders only when its own key changes.
 
 Put the fetch in a function next to the store. `set` writes several keys in one update, so a component reading two of them re-renders once.
 
@@ -41,7 +41,7 @@ export async function loadUsers() {
 }
 ```
 
-In components, split the reads: the shell reads `status`, the list reads `data`. Refetching a fresh list never re-runs the spinner branch.
+In components, split the reads: the shell reads `status`, the list reads `data`. When the list changes, only `Rows` re-renders; `UserList` re-renders only when `status` or `error` changes.
 
 ```tsx
 import { useStoreKey, useStoreSelector } from '@wildgrowth/voltix';
@@ -50,7 +50,7 @@ import { users, loadUsers } from './users';
 function UserList() {
   const { status, error } = useStoreSelector(users, ['status', 'error']);
   if (status === 'loading') return <Spinner />;
-  if (status === 'error') return <Error message={error} onRetry={loadUsers} />;
+  if (status === 'error') return <ErrorNotice message={error} onRetry={loadUsers} />;
   return <Rows />;
 }
 
@@ -60,15 +60,15 @@ function Rows() {
 }
 ```
 
-Start the load as early as you can. An effect in a leaf component fires only after everything above it has rendered and mounted, so every level you move the call up starts the request sooner. The store lives outside React, so the earliest spot is outside React entirely — your entry file — where the fetch runs in parallel with the first render:
+Start the load as early as you can. Effects run only after the whole tree has rendered and committed, and a component deep in the tree can mount later still, behind a lazy import, a condition or a Suspense boundary. The store lives outside React, so the earliest spot is your entry file, where the fetch runs in parallel with the first render:
 
 ```tsx
-// main.tsx — the fetch races the initial render
+// main.tsx: the fetch runs in parallel with the first render
 loadUsers();
 createRoot(document.getElementById('root')!).render(<App />);
 ```
 
-In an SSR framework, module scope and the entry file run on the server too, so start client loads from the top component's effect instead — or pass server-fetched data down as props, see [server rendering](./guides.md#server-rendering). For data only some screens need, put the kick-off in the highest component that knows it's needed:
+In an SSR framework, module scope and the entry file run on the server too. Start client loads from the top component's effect, or pass server-fetched data down as props (see [server rendering](./guides.md#server-rendering)). For data only some screens need, start the load in the highest component that needs it:
 
 ```tsx
 function useUsers() {
@@ -79,11 +79,11 @@ function useUsers() {
 }
 ```
 
-Because the store lives outside React, mounting two `UserList` components does not fetch twice: the `idle` guard runs once, and both components read the same slice.
+Two components that call `useUsers` start one fetch: the first effect sets `status` to `'loading'`, so the second effect's `idle` check skips it. Both components read the same store.
 
 ## Fetching by a parameter
 
-When the request depends on an input (a selected id, a search query), keep the input in the store and fetch when it changes. Before writing the response, check the store still wants it — switch documents quickly and a slow old response can land after a newer one:
+When the request depends on an input (a selected id, a search query), keep the input in the store and fetch when it changes. Before writing the response, check that the store still wants it. If the user switches documents quickly, a slow old response can land after a newer one:
 
 ```tsx
 import { createStore } from '@wildgrowth/voltix';
@@ -99,14 +99,19 @@ export const viewer = createStore({
 export async function openDocument(id: string) {
   if (viewer.getKey('id') === id) return;
   viewer.set({ id, status: 'loading' });
-  const res = await fetch(`/api/documents/${id}`);
-  const data: Doc = await res.json();
-  if (viewer.getKey('id') !== id) return; // the user opened another document; drop this one
-  viewer.set({ data, status: 'success' });
+  try {
+    const res = await fetch(`/api/documents/${id}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data: Doc = await res.json();
+    if (viewer.getKey('id') !== id) return; // the user opened another document; drop this one
+    viewer.set({ data, status: 'success' });
+  } catch {
+    if (viewer.getKey('id') === id) viewer.setKey('status', 'error');
+  }
 }
 ```
 
-The guard is plain store usage: the store holds the current selection, so reading it answers "is this response still the one on screen?". If a fetching library (React Query, SWR) handles your requests, it owns this problem — write its results into the store and skip the guard.
+The guard is plain store usage: the store holds the current selection, so reading it answers "is this response still the one on screen?". If a fetching library (React Query, SWR) handles your requests, it handles this race: write its results into the store and drop the guard.
 
 ```tsx
 function DocumentView({ id }: { id: string }) {
@@ -143,7 +148,7 @@ For a list, snapshot the array, update it optimistically, and restore the snapsh
 
 ## Live updates with polling
 
-For data that changes on the server, load a full snapshot once, then poll for what changed. The server returns a cursor with every response; send it back as `?since=` and you get only the rows that moved since. Payloads stay small no matter how long the tab is open.
+For data that changes on the server, load a full snapshot once, then poll for what changed. The server returns a cursor with every response; send it back as `?since=` and you get only the rows that changed since. Payloads stay small no matter how long the tab is open.
 
 The store holds the rows by id, their order, and the current cursor.
 
@@ -164,6 +169,7 @@ export const orders = createStore({
 
 export async function bootstrapOrders() {
   const res = await fetch('/api/orders');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const snap: Snapshot = await res.json();
   const byId: Record<string, Order> = {};
   for (const o of snap.orders) byId[o.id] = o;
@@ -176,14 +182,14 @@ export function applyOrdersDelta(delta: Delta) {
     return;
   }
   const byId = { ...orders.getKey('byId') };
-  const ids = new Set(orders.getKey('ids'));   // fresh copies — reference equality drives notify
+  const ids = new Set(orders.getKey('ids'));   // new objects: a write notifies only when the reference changes
   for (const o of delta.changed) { byId[o.id] = o; ids.add(o.id); }
   for (const id of delta.removed) { delete byId[id]; ids.delete(id); }
   orders.set({ byId, ids, cursor: delta.cursor });
 }
 ```
 
-Drive it with a loop that never overlaps its own requests and pauses when the tab is hidden. A recursive timeout waits for each poll to finish before scheduling the next; an error backs off instead of hammering.
+Drive it with a loop that never overlaps its own requests and pauses when the tab is hidden. A recursive timeout waits for each poll to finish before scheduling the next, and after an error it waits twice as long.
 
 ```ts
 export function startPolling(intervalMs = 4000) {
@@ -193,14 +199,15 @@ export function startPolling(intervalMs = 4000) {
     if (stopped) return;
     if (document.hidden) return schedule(intervalMs);
 
-    const cursor = orders.getKey('cursor');
-    if (cursor === null) {
-      await bootstrapOrders();
-      return schedule(intervalMs);
-    }
     try {
-      const res = await fetch(`/api/orders?since=${encodeURIComponent(cursor)}`);
-      applyOrdersDelta(await res.json());
+      const cursor = orders.getKey('cursor');
+      if (cursor === null) {
+        await bootstrapOrders();
+      } else {
+        const res = await fetch(`/api/orders?since=${encodeURIComponent(cursor)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        applyOrdersDelta(await res.json());
+      }
       schedule(intervalMs);
     } catch {
       schedule(intervalMs * 2); // back off on failure
@@ -224,10 +231,10 @@ useEffect(() => startPolling(), []);
 
 ## A live table: a lookup + polling
 
-The single-map version above re-renders every reader of `byId` on any delta. When a poll touches three rows out of thousands, exactly three components should re-render. Give each row its own store with a [lookup](./composition.md#lookups-a-store-per-id): an index store holds the id list and the cursor, and each row reads its own store.
+The store in [Live updates with polling](#live-updates-with-polling) keeps every row in one `byId` object, so any delta re-renders every reader of `byId`. When a poll touches three rows out of thousands, exactly three components should re-render. Give each row its own store with a [lookup](./composition.md#lookups-a-store-per-id): an index store holds the id list and the cursor, and each row reads its own store.
 
 ```tsx
-import { createStore } from '@wildgrowth/voltix';
+import { createStore, createLookup } from '@wildgrowth/voltix';
 
 type Row = { id: string; total: number; status: string };
 type Snapshot = { rows: Row[]; cursor: string };
@@ -244,15 +251,18 @@ export async function bootstrapTable() {
 }
 
 export function applyTableDelta(delta: Delta) {
-  // Only rows that changed touch their own store; siblings never re-render.
+  // each changed row writes its own store, so other rows stay as they are
   for (const r of delta.changed) rows.at(r.id).set({ total: r.total, status: r.status });
   for (const id of delta.removed) rows.remove(id);
 
-  if (delta.changed.length || delta.removed.length) {
-    const ids = new Set(table.getKey('ids'));
-    for (const r of delta.changed) ids.add(r.id);
-    for (const id of delta.removed) ids.delete(id);
-    table.setKey('ids', ids); // fresh Set — the list re-renders only on add/remove
+  const current = table.getKey('ids');
+  const added = delta.changed.filter((r) => !current.has(r.id)).map((r) => r.id);
+  const gone = delta.removed.filter((id) => current.has(id));
+  if (added.length || gone.length) {
+    const ids = new Set(current);
+    for (const id of added) ids.add(id);
+    for (const id of gone) ids.delete(id);
+    table.setKey('ids', ids); // a new Set only when rows were added or removed
   }
   table.setKey('cursor', delta.cursor);
 }

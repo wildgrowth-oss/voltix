@@ -2,6 +2,8 @@
 
 Every export from `@wildgrowth/voltix`, plus every method on a store. Types are shown as they appear in the source. `T` is your state shape.
 
+`@wildgrowth/voltix/vanilla` has the same exports without `useStoreKey`, `useStoreSelector` and `createStoreHook`, and runs without React. Both entries make the same stores, so a store from one nests in a store from the other.
+
 - [Getting started](./getting-started.md)
 - [Core concepts](./core-concepts.md)
 - [Composition](./composition.md)
@@ -11,10 +13,10 @@ Every export from `@wildgrowth/voltix`, plus every method on a store. Types are 
 Contents:
 
 - [`createStore`](#createstore) and [`StoreOptions`](#storeoptions)
-- [`createLookup`](#createlookup) and [`Lookup`](#lookup) — `at` · `has` · `remove` · `keys` · `size` · `clear`
-- [`Store`](#store) — [`select`](#storeselect) · [`children`](#storechildren)
+- [`createLookup`](#createlookup) and [`Lookup`](#lookup): `at` · `has` · `remove` · `keys` · `size` · `clear`
+- [`Store`](#store): [`select`](#storeselect) · [`children`](#storechildren)
 - [`createActions`](#createactions)
-- [Schema contracts](#schema-contracts) — [initial state](#initial-state) · [`onSchemaError`](#onschemaerror)
+- [Schema contracts](#schema-contracts): [initial state](#initial-state) · [`onSchemaError`](#onschemaerror)
 - Store methods: [`get`](#get) · [`getKey`](#getkey) · [`set`](#set) · [`setKey`](#setkey) · [`update`](#update) · [`increment`](#increment) · [`toggle`](#toggle) · [`mergeSet`](#mergeset) · [`reset`](#reset) · [`batch`](#batch) · [`subscribe`](#subscribe) · [`pick`](#pick) · [`intercept`](#intercept) · [`onChange`](#onchange) · [`derive`](#derive) · [`onSchemaError`](#onschemaerror)
 - [`useStoreKey`](#usestorekey)
 - [`useStoreSelector`](#usestoreselector)
@@ -62,7 +64,7 @@ const store = createStore(
 );
 ```
 
-`schema` registers a per-key write contract — see [Schema contracts](#schema-contracts).
+`schema` registers a per-key write contract. See [Schema contracts](#schema-contracts).
 
 `LeafState<T>` is `T` with its child-store keys removed, so options and every store method see only the reactive leaves.
 
@@ -80,7 +82,7 @@ function createLookup<Id extends PropertyKey, C extends object>(
 ): Lookup<Id, Store<C>>;
 ```
 
-Creates a [`Lookup`](#lookup): a store per id. The first `at(id)` runs `factory` and keeps the result. A factory that returns a built store is kept exactly as returned; a factory that returns a plain shape gets a store built for it, with `options` applied to each one.
+Creates a [`Lookup`](#lookup): a store per id. The first overload takes a factory that returns a built store or lookup (`NodeBrand` is the type both carry); the second takes a factory that returns a plain shape. The first `at(id)` runs `factory` and keeps the result. A factory that returns a built store is kept exactly as returned; a factory that returns a plain shape gets a store built for it, with `options` applied to each one.
 
 ```tsx
 import { createLookup } from '@wildgrowth/voltix';
@@ -104,7 +106,7 @@ interface Lookup<Id extends PropertyKey, S extends object> {
 
 `S` is the store type: exactly what the factory returns when it builds stores itself, or `Store<C>` when it returns a shape. Each store in the lookup has its own per-key subscriptions, so updating one item re-renders only that item. See [lookups](./composition.md#lookups-a-store-per-id).
 
-`at(id)` returns the store at `id`, created on first access and reused after. It takes one id; to walk into that store's own children, continue with [`select`](#storeselect): `documents.at('readme').select('comments').at('c1')`.
+`at(id)` returns the store at `id`, created on first access and reused after. It takes one id. When that store has children of its own, continue with [`select`](#storeselect) and `at`.
 
 ```tsx
 documents.at('readme').setKey('title', 'README');
@@ -125,7 +127,7 @@ documents.remove('readme'); // true
 documents.clear();
 ```
 
-When a store needs behaviour, the factory builds it complete:
+When each store needs its own schema or handler, the factory builds the store itself:
 
 ```tsx
 const todos = createLookup((id: string) => {
@@ -137,7 +139,7 @@ const todos = createLookup((id: string) => {
   return todo;
 });
 
-todos.at('t1'); // the store is exactly what the factory built — contract and handler included
+todos.at('t1'); // the store the factory built, with its contract and handler
 ```
 
 For plain per-id data, a shape factory plus a second argument of [`StoreOptions`](#storeoptions) applies [`equals`](#storeoptions) and [`schema`](#schema-contracts) to every store the lookup builds:
@@ -218,10 +220,10 @@ const counterActions = createActions(counter, (store) => ({
 }));
 
 counterActions.increment();
-counter.setKey('count', 5); // the store is still just a store
+counter.setKey('count', 5); // direct writes still work
 ```
 
-Actions over a lookup take the id first:
+Actions over a lookup take the id as their first argument:
 
 ```tsx
 const todos = createLookup((id: string) => ({ text: '', done: false }));
@@ -234,7 +236,7 @@ const todoActions = createActions(todos, (lookup) => ({
 todoActions.add('t1', 'Ship it');
 ```
 
-Actions are plain functions in a plain object: export them beside the store, combine sets with object spread (`{ ...baseActions, ...adminActions }`), and call one from another like any function.
+Actions are plain functions in a plain object: export them beside the store, merge several action objects with object spread (`{ ...baseActions, ...adminActions }`), and call one from another like any function.
 
 ---
 
@@ -242,7 +244,7 @@ Actions are plain functions in a plain object: export them beside the store, com
 
 `options.schema` puts a per-key write contract on a store. A write runs the key's schema first: if it reports issues the write for that key is **vetoed** (the stored value is untouched and no subscriber is notified), and if the schema transforms, the parsed output is what gets stored.
 
-Schemas are [Standard Schemas](https://standardschema.dev), the shared interface implemented by zod (≥3.24), valibot (≥1.0), and arktype (≥2.0). Voltix vendors only the *types*, so bring whichever library you like and Voltix stays dependency-free.
+Schemas are [Standard Schemas](https://standardschema.dev), the shared interface implemented by zod (≥3.24), valibot (≥1.0), and arktype (≥2.0). Voltix copies only the interface's *types* into its own source, so you bring whichever library you like and Voltix itself has no dependencies.
 
 ```tsx
 import { z } from 'zod';
@@ -268,19 +270,19 @@ A schema's output type must match the key's type, so a mismatch is a compile err
 createStore({ count: 0 }, { schema: { count: z.string() } }); // ✗ output is string, key is number
 ```
 
-Rules worth knowing:
+How contracts behave:
 
-- **Every write path is covered.** `set`, `setKey`, `update`, `increment`, `toggle`, `mergeSet`, and `reset` all validate. Inside a multi-key `set`, a vetoed key is dropped while the rest of the update commits.
-- **Initial state is validated too.** See [below](#initial-state).
-- **Order is schema → equality → notify.** Equality (`options.equals`) compares the *parsed* value, so a write that transforms into the current value is correctly skipped.
-- **Validation must be synchronous.** An async schema is vetoed with an explanatory error; validate async input before writing it.
-- **Rejections go to `console.error`** unless a handler is registered with [`onSchemaError`](#onschemaerror). In development the message names the key and vendor and lists each issue with its path; production builds log a terse line. A schema that throws vetoes the write.
-- **Cost.** A store with no `schema` skips validation entirely. Once a store has one, a validated write costs roughly 30–75ns depending on the schema, and writes to its other keys carry a small fixed overhead (~11ns). Put contracts on boundary keys (server payloads, forms, storage) rather than on keys written every animation frame.
+- `set`, `setKey`, `update`, `increment`, `toggle`, `mergeSet` and `reset` all validate. Inside a multi-key `set`, a vetoed key is dropped while the rest of the update commits.
+- Initial state is validated too; see [Initial state](#initial-state).
+- The schema runs first, then equality, then the notify. Equality (`options.equals`) compares the *parsed* value, so a write that transforms into the current value is skipped.
+- Validation must be synchronous. An async schema is vetoed with an explanatory error; validate async input before writing it.
+- Rejections go to `console.error` unless a handler is registered with [`onSchemaError`](#onschemaerror). In development the message names the key and vendor and lists each issue with its path; production builds log a short line. A schema that throws vetoes the write.
+- A store with no `schema` skips validation entirely. Once a store has one, a validated write costs roughly 30–75ns depending on the schema, and writes to its other keys carry a small fixed overhead (~11ns). Put contracts on boundary keys (server payloads, forms, storage) rather than on keys written every animation frame.
 
 For a lookup, schemas passed in the second argument apply to every store it builds.
 
 ```tsx
-const presence = createStore(
+const presence = createLookup(
   (userId: string) => ({ online: false, lastSeen: 0 }),
   { schema: { lastSeen: z.number().int().min(0) } }
 );
@@ -297,7 +299,7 @@ const store = createStore(
   { email: '  ADA@Example.COM ' },
   { schema: { email: z.string().trim().toLowerCase() } }
 );
-store.getKey('email'); // 'ada@example.com' — normalized before the first write
+store.getKey('email'); // 'ada@example.com': normalized at construction
 ```
 
 A bad starting value is logged to the console and kept as-is; construction never throws (a store seeded from corrupt `localStorage` should not crash the app at import). Handlers don't exist yet at construction, so these always go to the console. Stores built by a lookup are checked the same way as each is created.
@@ -329,7 +331,7 @@ const accountActions = createActions(account, (store) => ({
 account.onSchemaError((error) => accountActions.flagEmail(error.issues[0].message));
 
 account.setKey('email', 'not-an-email');
-account.getKey('email');      // 'ada@lovelace.dev' — still vetoed
+account.getKey('email');      // 'ada@lovelace.dev': the write was vetoed
 account.getKey('emailError'); // 'Invalid email address'
 ```
 
@@ -339,7 +341,7 @@ Registration is per store. In a lookup, register the handler inside the factory 
 
 ```tsx
 const todos = createLookup((id: string) => {
-  const todo = createStore({ text: '', error: '' }, { schema: { text: z.string().min(1) } });
+  const todo = createStore({ text: 'New todo', error: '' }, { schema: { text: z.string().min(1) } });
   todo.onSchemaError((error) => todo.setKey('error', error.issues[0].message));
   return todo;
 });
@@ -392,7 +394,7 @@ store.set({ count: 5, name: 'Bob' });
 ```tsx
 store.set({ name: 'Bob' });            // count untouched, name written
 store.set({ count: undefined });       // count written as undefined, and notifies
-store.set({ ...maybeEmpty });          // absent keys stay absent
+store.set({ ...maybeEmpty });          // keys missing from the patch keep their values
 ```
 
 ### `setKey`
@@ -464,7 +466,7 @@ store.mergeSet('user', { name: 'Bob' }); // keeps other fields of user, updates 
 reset(keys?: (keyof T)[]): void
 ```
 
-Resets keys to the initial state passed at creation. With no argument, resets every key. With an array, resets only those keys. When a key has a transforming [schema](#schema-contracts), the initial state was committed post-transform, and `reset` restores that value.
+Resets keys to the initial state passed at creation. With no argument, resets every key. With an array, resets only those keys. When a key has a transforming [schema](#schema-contracts), the store keeps the transformed initial value, and `reset` restores that value.
 
 Stores without child nodes or schemas retain the original input object for resets. Changing its top-level properties after `createStore` changes the values that `reset` restores, so treat that object as immutable. Stores with child nodes or schemas keep a shallow copy of their initial leaf values instead.
 
@@ -473,7 +475,7 @@ store.reset();          // all keys back to initial
 store.reset(['count']); // only count
 ```
 
-`reset` covers this store's own leaves. Children are independent stores and keep their state — reset them directly, and clear lookups with `clear()`. A full logout looks like:
+`reset` covers this store's own leaves. Children are independent stores and keep their state: reset them directly, and clear lookups with `clear()`. A full logout looks like:
 
 ```tsx
 app.reset();
@@ -487,7 +489,7 @@ app.select('todos').clear();
 batch(fn: () => void): void
 ```
 
-Runs `fn`, coalescing every write inside it into one notification round. Each affected subscription is notified once after `fn` returns. Separate subscriptions remain independent even if they use the same callback. Nested `batch` calls join the outer batch. See [batching](./core-concepts.md#batching).
+Runs `fn`, coalescing every write inside it into one notification round. Each affected subscription is notified once after `fn` returns. A function subscribed twice runs once for each of its subscriptions. Nested `batch` calls join the outer batch. See [batching](./core-concepts.md#batching).
 
 ```tsx
 store.batch(() => {
@@ -547,7 +549,7 @@ const remove = store.intercept((update) => {
   }
 }, ['count']);
 
-// Veto deletes while a sync is running
+// Veto writes to items while a sync is running
 store.intercept((update, state) => {
   if (state.syncing && update.items) return false;
 }, ['items']);
@@ -623,7 +625,7 @@ function useStoreSelector<T extends object, S extends SelectorInput<T>>(
 type SelectorInput<T> = ReadonlyArray<keyof T | { [K in keyof T]?: (prev: T[K], next: T[K]) => boolean }>
 ```
 
-Subscribes to several keys and returns just those keys. The selector is always an array; each element is a key string or a `{ key: compareFn }` object. The component re-renders when a selected key changes. A compare function makes that call for its key: return `true` to treat two values as equal and skip the re-render. Store-level [`options.equals`](#storeoptions) applies when no per-key compare is given.
+Subscribes to several keys and returns those keys as one object. The selector is always an array; each element is a key name or an object that maps a key to a compare function, like `{ tasks: (prev, next) => prev.length === next.length }`. The component re-renders when a selected key changes. A compare function decides this for its key: return `true` to treat two values as equal and skip the re-render. Store-level [`options.equals`](#storeoptions) applies when no per-key compare is given.
 
 ```tsx
 // Keys
@@ -696,7 +698,7 @@ function persist<T extends object>(
 
 Persists the given keys: each one is written to storage as it changes, under `` `${persistKey}:${keyName}` ``. Works with synchronous storage (`localStorage`, `sessionStorage`) and asynchronous storage (React Native `AsyncStorage`); async writes are fire-and-forget, so a slow write never blocks the state update. Returns an unsubscribe that stops persisting. See [persistence](./guides.md#persistence).
 
-The default format is JSON plus `Date`, `Map`, `Set`, and non-finite numbers, which all survive the round-trip. To store other types, pass a [`parser`](#storage-interfaces) — the same one to `loadPersistedState`.
+The default format is JSON plus `Date`, `Map`, `Set`, and non-finite numbers, which all survive the round-trip. To store other types, pass a [`parser`](#storage-interfaces), and pass the same one to `loadPersistedState`.
 
 ```tsx
 persist(store, localStorage, 'myapp', ['theme', 'isLoggedIn']);
@@ -722,11 +724,13 @@ function loadPersistedState<T extends object>(
 Reads keys written by [`persist`](#persist) and returns them as a partial state. Returns synchronously for sync storage and a `Promise` for async storage. Use it to seed the initial state at creation, or to hydrate a store after creation. Pass the same `parser` given to `persist`, if any.
 
 ```tsx
-// Sync
+// Sync storage
 const persisted = loadPersistedState(localStorage, 'myapp', ['theme']);
 const store = createStore({ theme: 'light', ...persisted });
+```
 
-// Async
+```tsx
+// Async storage
 const persisted = await loadPersistedState(AsyncStorage, 'myapp', ['theme']);
 const store = createStore({ theme: 'light', ...persisted });
 ```
@@ -754,7 +758,7 @@ interface PersistParser {
 
 The persistence functions accept the DOM `Storage` type, any object matching `StorageSupportingInterface` (sync), or any object matching `AsyncStorageSupportingInterface` (async, such as React Native `AsyncStorage`).
 
-A `PersistParser` controls how values become strings. The default handles JSON plus `Date`, `Map`, `Set`, and non-finite numbers. Anything with `stringify`/`parse` fits: `JSON` gives you raw behaviour, [superjson](https://github.com/flightcontrolhq/superjson) covers BigInt, RegExp, and registered classes. Use one parser consistently per prefix.
+A `PersistParser` controls how values become strings. The default handles JSON plus `Date`, `Map`, `Set`, and non-finite numbers. Anything with `stringify`/`parse` fits: `JSON` stores plain JSON only, [superjson](https://github.com/flightcontrolhq/superjson) covers BigInt, RegExp, and registered classes. Use one parser consistently per prefix.
 
 ---
 
@@ -767,7 +771,7 @@ const { count } = useStoreSelector(store, ['count', 'name']);
 //                                                  ^ 'name' is selected but never destructured
 ```
 
-It works with zero configuration. `useStoreSelector(store, [...])` calls are recognized by name; a hook made with `createStoreHook` is recognized by how it's used — any `use*`-named call taking a selector array whose result is destructured, in any file. Both forms include `{ key: compareFn }` custom-compare entries. Requires ESLint 9+ (flat config).
+It works with zero configuration. `useStoreSelector(store, [...])` calls are recognized by name; a hook made with `createStoreHook` is recognized by how it is used: any `use*`-named call taking a selector array whose result is destructured, in any file. Both forms also check entries that carry a compare function. Requires ESLint 9+ (flat config).
 
 ```js
 // eslint.config.js
@@ -791,14 +795,14 @@ export default [voltix.configs.recommended];
 
 The rule warns only when it can prove a key is unused; anything unclear is skipped:
 
-- The result must be destructured inline. A `...rest` element covers the remaining keys only when the rest variable is read somewhere — a rest nobody touches proves nothing, and the other keys are still checked.
-- For a hook recognized by usage (anything other than a literal `useStoreSelector` call), at least one selected key must appear in the destructuring — that overlap is what marks it as a selector call, so an unrelated hook that happens to take a string array is left alone.
+- The result must be destructured inline. A `...rest` element covers the remaining keys only when the rest variable is read somewhere. A rest that nothing reads proves nothing, and the other keys are still checked.
+- For a hook recognized by usage (anything other than a literal `useStoreSelector` call), at least one selected key must appear in the destructuring: that overlap marks it as a selector call, so an unrelated hook that happens to take a string array is left alone.
 
 ```tsx
-const { items } = useCart(['items', 'total']);          // provably unused 'total' — warns
-const slice = useCart(['items', 'total']);              // not destructured — skipped
+const { items } = useCart(['items', 'total']);          // 'total' is provably unused: warns
+const slice = useCart(['items', 'total']);              // not destructured: skipped
 const { items, ...rest } = useCart(['items', 'total']);
-render(rest);                                           // rest is read — skipped
-const { items, ...rest } = useCart(['items', 'total']); // rest never read — 'total' warns
-const { data } = useQueries(['users', 'posts']);        // no overlap — not a selector call, skipped
+render(rest);                                           // rest is read: skipped
+const { items, ...rest } = useCart(['items', 'total']); // rest is never read: 'total' warns
+const { data } = useQueries(['users', 'posts']);        // no overlap: not a selector call, skipped
 ```
